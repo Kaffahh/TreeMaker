@@ -65,8 +65,10 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 .hint-bar{position:absolute;top:12px;left:12px;z-index:50;background:rgba(26,29,39,.9);border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:10px;color:var(--text3);line-height:1.7;pointer-events:none;max-width:250px}
 .hint-bar b{color:var(--text2);font-weight:600}
 #nodeArrows{position:absolute;left:0;top:0;width:0;height:0;z-index:55;display:none;pointer-events:none}
-#nodeArrows .arr{position:absolute;width:26px;height:26px;border-radius:50%;background:#232734;border:1.5px solid var(--accent);color:var(--accent2);font-size:10px;cursor:pointer;pointer-events:auto;display:flex;align-items:center;justify-content:center;transition:transform .12s,background .12s,color .12s,box-shadow .12s;padding:0;font-family:inherit;line-height:1}
-#nodeArrows .arr:hover{background:var(--accent);color:#fff;transform:scale(1.25);box-shadow:0 0 14px rgba(108,92,231,.7);z-index:2}
+#nodeArrows .arr{position:absolute;width:var(--as,26px);height:var(--as,26px);border-radius:50%;background:rgba(35,39,52,.95);border:2px solid var(--ac,#a29bfe);color:var(--ac,#a29bfe);font-size:calc(var(--as,26px)*0.36);cursor:pointer;pointer-events:auto;display:flex;align-items:center;justify-content:center;transition:transform .12s,background .12s,color .12s,box-shadow .12s,border-color .12s;padding:0;font-family:inherit;line-height:1;animation:arrowPop .18s ease-out;backdrop-filter:blur(2px)}
+#nodeArrows .arr:hover{background:var(--ac,#6c5ce7);border-color:var(--ac,#6c5ce7);color:#fff;transform:scale(1.25);box-shadow:0 0 16px var(--ac,#6c5ce7);z-index:2}
+#nodeArrows .arr:active{transform:scale(1.05)}
+@keyframes arrowPop{from{transform:scale(.4);opacity:0}to{transform:scale(1);opacity:1}}
 .minimap{position:absolute;bottom:12px;right:12px;width:170px;height:118px;background:rgba(26,29,39,.94);border:1px solid var(--border2);border-radius:8px;z-index:50;overflow:hidden}
 .minimap canvas{width:100%;height:100%;display:block}
 .zoom-ctl{position:absolute;bottom:12px;left:12px;display:flex;gap:4px;z-index:50}
@@ -758,9 +760,49 @@ function clearConnectSrc() {
 }
 
 /* ---------------- hover arrows (SmartDraw-style quick add) ---------------- */
-const ARROW_SIZE = 26, ARROW_GAP = 10;
+const ARROW_GAP = 10;
+const ARROW_DEFAULTS = { up: '#00cec9', down: '#6c5ce7', left: '#fdcb6e', right: '#ff6b6b' };
+let arrowColors = Object.assign({}, ARROW_DEFAULTS);
+let arrowSize = 26;      // button diameter in px (20-40)
+let arrowsEnabled = true;
+
+function applyArrowColors() {
+  const box = document.getElementById('nodeArrows');
+  if (!box) return;
+  box.style.setProperty('--as', arrowSize + 'px');
+  ['up', 'down', 'left', 'right'].forEach(function (dir) {
+    const btn = box.querySelector('[data-dir="' + dir + '"]');
+    if (btn) btn.style.setProperty('--ac', arrowColors[dir] || '#a29bfe');
+  });
+}
+function setArrowColor(dir, color) {
+  if (arrowColors[dir] == null || !color) return;
+  arrowColors[dir] = color;
+  applyArrowColors();
+  updateProps();
+}
+function setArrowSize(px) {
+  arrowSize = Math.min(40, Math.max(20, Math.round(+px) || 26));
+  applyArrowColors();
+  positionArrows();
+  updateProps();
+}
+function toggleArrows() {
+  arrowsEnabled = !arrowsEnabled;
+  if (!arrowsEnabled) hideArrows();
+  updateProps();
+}
+function resetArrowColors() {
+  arrowColors = Object.assign({}, ARROW_DEFAULTS);
+  arrowSize = 26;
+  arrowsEnabled = true;
+  applyArrowColors();
+  positionArrows();
+  updateProps();
+}
 
 function showArrows(n) {
+  if (!arrowsEnabled) return;
   if (!n || n.length === 0 || n.removed()) return;
   if (arrowNode && arrowNode.length && !arrowNode.removed() && arrowNode.id() === n.id()) {
     positionArrows();
@@ -799,7 +841,7 @@ function positionArrows() {
   const rp = arrowNode.renderedPosition();
   const z = cy.zoom();
   const hw = (arrowNode.width() * z) / 2, hh = (arrowNode.height() * z) / 2;
-  const S = ARROW_SIZE, G = ARROW_GAP;
+  const S = arrowSize, G = ARROW_GAP;
   const cx = ox + rp.x, cyy = oy + rp.y;
   placeArrow('up', cx - S / 2, cyy - hh - G - S);
   placeArrow('down', cx - S / 2, cyy + hh + G);
@@ -1022,6 +1064,7 @@ function exportJSON() {
   const data = {
     app: 'treemaker', version: 1, nextId: nextId,
     theme: currentTheme, customBase: customBase, customMode: customMode,
+    arrowColors: arrowColors, arrowSize: arrowSize, arrowsEnabled: arrowsEnabled,
     nodes: cy.nodes().map(function (n) {
       return { id: n.id(), label: n.data('label'), x: Math.round(n.position('x')), y: Math.round(n.position('y')),
         shape: n.data('shape'), color: n.data('color'), w: n.data('w'), h: n.data('h'),
@@ -1056,6 +1099,12 @@ function doImport() {
   if (data.theme && THEMES[data.theme]) currentTheme = data.theme;
   if (data.customBase) customBase = data.customBase;
   if (data.customMode === 'single' || data.customMode === 'shades') customMode = data.customMode;
+  if (data.arrowColors) ['up', 'down', 'left', 'right'].forEach(function (dir) {
+    if (typeof data.arrowColors[dir] === 'string') arrowColors[dir] = data.arrowColors[dir];
+  });
+  if (+data.arrowSize >= 20 && +data.arrowSize <= 40) arrowSize = Math.round(+data.arrowSize);
+  if (typeof data.arrowsEnabled === 'boolean') arrowsEnabled = data.arrowsEnabled;
+  applyArrowColors();
   (data.nodes || []).forEach(function (d) {
     const n = addNode(d.shape || 'round-rectangle', d.x || 0, d.y || 0, {
       label: d.label || 'Node', color: d.color, w: d.w, h: d.h, fontSize: d.fontSize
@@ -1176,6 +1225,22 @@ function renderThemePanel() {
       '<option value="shades"' + (customMode === 'shades' ? ' selected' : '') + '>Auto shades per level</option>' +
       '</select></div>';
   }
+  const arrowCells = [['up', '&#9650;', 'Children above'], ['down', '&#9660;', 'Children below'], ['left', '&#9664;', 'Sibling left'], ['right', '&#9654;', 'Sibling right']].map(function (pair) {
+    const dir = pair[0];
+    return '<div style="flex:1;text-align:center;min-width:0">' +
+      '<div style="font-size:13px;color:' + esc(arrowColors[dir]) + ';margin-bottom:2px" title="' + pair[2] + '">' + pair[1] + '</div>' +
+      '<input type="color" class="prop-input" style="width:100%;height:26px;padding:2px" value="' + esc(arrowColors[dir]) + '" onchange="setArrowColor(\'' + dir + '\',this.value)" title="' + pair[2] + ' color"></div>';
+  }).join('');
+  const arrowsHtml =
+    '<div style="border-bottom:1px solid var(--border);padding:8px 12px;text-align:left">' +
+    '<div class="prop-label">Hover arrows</div>' +
+    '<div class="prop-row"><button class="prop-btn' + (arrowsEnabled ? ' active' : '') + '" onclick="toggleArrows()">' + (arrowsEnabled ? 'Shown' : 'Hidden') + '</button>' +
+    '<button class="prop-btn" onclick="resetArrowColors()">Reset</button></div>' +
+    '<div style="display:flex;gap:6px;margin-top:2px">' + arrowCells + '</div>' +
+    '<div class="prop-row" style="margin-top:6px"><span style="font-size:10px;color:var(--text3)">Size</span>' +
+    '<input type="range" min="20" max="40" step="1" value="' + arrowSize + '" onchange="setArrowSize(this.value)" style="flex:1;accent-color:#6c5ce7;cursor:pointer">' +
+    '<span style="font-size:10px;color:var(--text2);min-width:32px;text-align:right">' + arrowSize + 'px</span></div>' +
+    '</div>';
   noSel.innerHTML =
     '<div style="border-bottom:1px solid var(--border);padding:8px 12px;text-align:left">' +
     '<div class="prop-label">Theme</div>' +
@@ -1184,6 +1249,7 @@ function renderThemePanel() {
     '<div class="prop-row" style="margin-top:6px"><button class="prop-btn" onclick="applyThemeToAll()">Apply to all nodes</button></div>' +
     '<div style="font-size:10px;color:var(--text3);margin-top:6px;line-height:1.6">New nodes &amp; templates follow the active theme.<br>Tree levels get palette colors top-down.</div>' +
     '</div>' +
+    arrowsHtml +
     '<div style="padding:16px 20px;font-size:12px;line-height:1.8">Select a node to edit properties<br>' +
     '<span style="font-size:10px">Double-click empty canvas to add a node<br>Hover a node, then click an arrow to grow the tree</span></div>';
 }
@@ -1553,6 +1619,7 @@ window.addEventListener('load', function () {
   setupKeyboard();
   buildPalette();
   buildTemplateList();
+  applyArrowColors();
   saveHistory();
   loadTemplate('org');
   setTimeout(function () { cy.resize(); fitView(); scheduleMinimap(); }, 150);
