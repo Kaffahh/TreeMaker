@@ -256,6 +256,119 @@ const SHAPES = [
 ];
 const CIRCLE_SHAPES = { ellipse: 1, diamond: 1, hexagon: 1, pentagon: 1, star: 1, octagon: 1 };
 
+/* ---------------- themes ---------------- */
+const THEMES = {
+  colorful:  { name: 'Colorful',    desc: 'Rainbow default',  palette: ['#6c5ce7','#e94560','#00cec9','#fdcb6e','#74b9ff','#ff6b6b','#a29bfe','#55efc4','#fab1a0','#fd79a8','#636e72','#2d3436'], edge: '#8b8da3', text: '#ffffff' },
+  monoBlue:   { name: 'Mono Blue',   desc: 'Single color',     palette: ['#4a9eff'], edge: '#4a9eff', text: '#ffffff' },
+  monoSlate:  { name: 'Mono Slate',  desc: 'Single color',     palette: ['#475569'], edge: '#64748b', text: '#ffffff' },
+  monoGreen:  { name: 'Mono Green',  desc: 'Single color',     palette: ['#00c896'], edge: '#00c896', text: '#ffffff' },
+  monoPurple: { name: 'Mono Purple', desc: 'Single color',     palette: ['#8b5cf6'], edge: '#8b5cf6', text: '#ffffff' },
+  ocean:      { name: 'Ocean',       desc: 'Blue harmony',     palette: ['#0ea5e9','#0369a1','#38bdf8','#164e63'], edge: '#38bdf8', text: '#ffffff' },
+  forest:     { name: 'Forest',      desc: 'Green harmony',    palette: ['#16a34a','#15803d','#4ade80','#14532d'], edge: '#4ade80', text: '#ffffff' },
+  sunset:     { name: 'Sunset',      desc: 'Warm harmony',     palette: ['#f97316','#c2410c','#fdba74','#7c2d12'], edge: '#fdba74', text: '#ffffff' },
+  pastel:     { name: 'Pastel',      desc: 'Soft colors',      palette: ['#f9a8d4','#93c5fd','#86efac','#fde68a'], edge: '#c4b5fd', text: '#1f2937' },
+  custom:     { name: 'Custom...',   desc: 'Your own color',   palette: null, edge: null, text: null }
+};
+let currentTheme = 'colorful';
+let customBase = '#6c5ce7';
+let customMode = 'single'; // 'single' | 'shades'
+
+function shadeColor(hex, amt) {
+  let c = String(hex).replace('#', '');
+  if (c.length === 3) c = c[0] + c[0] + c[1] + c[1] + c[2] + c[2];
+  const n = parseInt(c.slice(0, 6), 16);
+  if (isNaN(n)) return '#8b8da3';
+  const cl = function (v) { return Math.max(0, Math.min(255, v)); };
+  const r = cl((n >> 16) + amt), g = cl(((n >> 8) & 255) + amt), b = cl((n & 255) + amt);
+  return '#' + ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
+}
+function readableText(hex) {
+  let c = String(hex).replace('#', '');
+  if (c.length === 3) c = c[0] + c[0] + c[1] + c[1] + c[2] + c[2];
+  const n = parseInt(c.slice(0, 6), 16);
+  if (isNaN(n)) return '#ffffff';
+  const lum = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+  return lum > 0.6 ? '#1f2937' : '#ffffff';
+}
+function themePalette() {
+  if (currentTheme === 'custom') {
+    if (customMode === 'shades') return [customBase, shadeColor(customBase, 55), shadeColor(customBase, -45), shadeColor(customBase, 100), shadeColor(customBase, -80)];
+    return [customBase];
+  }
+  return THEMES[currentTheme].palette;
+}
+function themeEdgeColor() {
+  return currentTheme === 'custom' ? customBase : THEMES[currentTheme].edge;
+}
+function themeTextColor() {
+  if (currentTheme === 'custom') return readableText(customBase);
+  return THEMES[currentTheme].text || '#ffffff';
+}
+function themeName() {
+  return currentTheme === 'custom' ? 'Custom (' + customBase + ')' : THEMES[currentTheme].name;
+}
+// depth of each node from roots (BFS), used to shade levels with the theme palette
+function nodeDepths() {
+  const depths = {};
+  const hasParent = {};
+  const children = {};
+  cy.edges().forEach(function (e) {
+    hasParent[e.target().id()] = true;
+    const s = e.source().id();
+    if (!children[s]) children[s] = [];
+    children[s].push(e.target().id());
+  });
+  const queue = [];
+  cy.nodes().forEach(function (n) {
+    if (!hasParent[n.id()]) { depths[n.id()] = 0; queue.push(n.id()); }
+  });
+  if (queue.length === 0 && cy.nodes().length > 0) { depths[cy.nodes()[0].id()] = 0; queue.push(cy.nodes()[0].id()); }
+  while (queue.length > 0) {
+    const id = queue.shift();
+    (children[id] || []).forEach(function (cid) {
+      if (depths[cid] == null) { depths[cid] = depths[id] + 1; queue.push(cid); }
+    });
+  }
+  let max = 0;
+  Object.keys(depths).forEach(function (k) { if (depths[k] > max) max = depths[k]; });
+  cy.nodes().forEach(function (n) { if (depths[n.id()] == null) depths[n.id()] = ++max; });
+  return depths;
+}
+function recolorByTheme() {
+  const nodes = cy.nodes();
+  if (nodes.length === 0) return;
+  const pal = themePalette();
+  const depths = nodeDepths();
+  const tc = themeTextColor();
+  nodes.forEach(function (n) {
+    const c = pal[depths[n.id()] % pal.length];
+    n.data('color', c);
+    n.data('border', lighten(c, 40));
+    n.data('textColor', tc);
+  });
+  const ec = themeEdgeColor();
+  cy.edges().forEach(function (e) { e.data('color', ec); });
+}
+function setTheme(id) {
+  if (!THEMES[id]) return;
+  currentTheme = id;
+  updateProps();
+}
+function setCustomBase(color) {
+  customBase = color;
+  updateProps();
+}
+function setCustomMode(mode) {
+  customMode = mode;
+  updateProps();
+}
+function applyThemeToAll() {
+  if (cy.nodes().length === 0) { showToast('Nothing to recolor'); return; }
+  recolorByTheme();
+  saveHistory(); refreshAll(); scheduleMinimap();
+  showToast('Theme applied: ' + themeName());
+}
+
 function shapeDefaultSize(shape) {
   return CIRCLE_SHAPES[shape] ? { w: 104, h: 104 } : { w: 140, h: 50 };
 }
@@ -359,7 +472,7 @@ function initCy() {
 }
 
 function defaultEdgeData() {
-  return { id: 'e' + (nextId++), color: '#8b8da3', width: 2, z: 0 };
+  return { id: 'e' + (nextId++), color: themeEdgeColor(), width: 2, z: 0 };
 }
 
 /* ---------------- events ---------------- */
@@ -474,11 +587,12 @@ function setTool(t) {
 /* ---------------- node operations ---------------- */
 function defaultNodeData(shape) {
   const d = shapeDefaultSize(shape);
-  const color = COLORS[(nextId - 1) % COLORS.length];
+  const pal = themePalette();
+  const color = pal[(nextId - 1) % pal.length];
   return {
     id: 'n' + (nextId++), label: 'New Node',
     color: color, shape: shape, w: d.w, h: d.h, tw: d.w - 16,
-    fontSize: 13, textColor: '#ffffff', fontWeight: 'normal',
+    fontSize: 13, textColor: themeTextColor(), fontWeight: 'normal',
     bw: 2, border: lighten(color, 40), z: 0
   };
 }
@@ -907,6 +1021,7 @@ function exportPNG() {
 function exportJSON() {
   const data = {
     app: 'treemaker', version: 1, nextId: nextId,
+    theme: currentTheme, customBase: customBase, customMode: customMode,
     nodes: cy.nodes().map(function (n) {
       return { id: n.id(), label: n.data('label'), x: Math.round(n.position('x')), y: Math.round(n.position('y')),
         shape: n.data('shape'), color: n.data('color'), w: n.data('w'), h: n.data('h'),
@@ -938,6 +1053,9 @@ function doImport() {
   const idMap = {};
   cy.elements().remove();
   hideArrows();
+  if (data.theme && THEMES[data.theme]) currentTheme = data.theme;
+  if (data.customBase) customBase = data.customBase;
+  if (data.customMode === 'single' || data.customMode === 'shades') customMode = data.customMode;
   (data.nodes || []).forEach(function (d) {
     const n = addNode(d.shape || 'round-rectangle', d.x || 0, d.y || 0, {
       label: d.label || 'Node', color: d.color, w: d.w, h: d.h, fontSize: d.fontSize
@@ -982,6 +1100,7 @@ function updateProps() {
   if (s.length === 0) {
     content.style.display = 'none'; content.innerHTML = '';
     noSel.style.display = 'block'; title.textContent = 'Properties';
+    renderThemePanel();
     return;
   }
   content.style.display = 'block'; noSel.style.display = 'none';
@@ -1039,6 +1158,34 @@ function updateProps() {
     '<button class="prop-btn' + (n.data('fontWeight') === 'bold' ? ' active' : '') + '" onclick="setProp(\'bold\')" style="font-weight:bold">B</button></div></div>' +
     '<div class="prop-section"><div class="prop-label">Connections</div>' +
     '<div style="font-size:11px;color:var(--text2)">' + n.connectedEdges().length + ' edge(s)</div></div>';
+}
+
+function renderThemePanel() {
+  const noSel = document.getElementById('noSelection');
+  const opts = Object.keys(THEMES).map(function (k) {
+    return '<option value="' + k + '"' + (currentTheme === k ? ' selected' : '') + '>' + THEMES[k].name + ' — ' + THEMES[k].desc + '</option>';
+  }).join('');
+  let customHtml = '';
+  if (currentTheme === 'custom') {
+    customHtml =
+      '<div class="prop-row" style="margin-top:6px">' +
+      '<input type="color" class="prop-input" value="' + esc(customBase) + '" onchange="setCustomBase(this.value)">' +
+      '<input class="prop-input" value="' + esc(customBase) + '" onchange="setCustomBase(this.value)"></div>' +
+      '<div class="prop-row" style="margin-top:6px"><select class="prop-select" onchange="setCustomMode(this.value)">' +
+      '<option value="single"' + (customMode === 'single' ? ' selected' : '') + '>One flat color</option>' +
+      '<option value="shades"' + (customMode === 'shades' ? ' selected' : '') + '>Auto shades per level</option>' +
+      '</select></div>';
+  }
+  noSel.innerHTML =
+    '<div style="border-bottom:1px solid var(--border);padding:8px 12px;text-align:left">' +
+    '<div class="prop-label">Theme</div>' +
+    '<select class="prop-select" onchange="setTheme(this.value)">' + opts + '</select>' +
+    customHtml +
+    '<div class="prop-row" style="margin-top:6px"><button class="prop-btn" onclick="applyThemeToAll()">Apply to all nodes</button></div>' +
+    '<div style="font-size:10px;color:var(--text3);margin-top:6px;line-height:1.6">New nodes &amp; templates follow the active theme.<br>Tree levels get palette colors top-down.</div>' +
+    '</div>' +
+    '<div style="padding:16px 20px;font-size:12px;line-height:1.8">Select a node to edit properties<br>' +
+    '<span style="font-size:10px">Double-click empty canvas to add a node<br>Hover a node, then click an arrow to grow the tree</span></div>';
 }
 
 function setProp(key, val) {
@@ -1281,6 +1428,7 @@ function loadTemplate(id) {
   (spec.edges || []).forEach(function (pair) {
     if (added[pair[0]] && added[pair[1]]) linkNodes(added[pair[0]], added[pair[1]]);
   });
+  if (currentTheme !== 'colorful') recolorByTheme();
   cy.$(':selected').unselect();
   fitView();
   saveHistory(); refreshAll();
