@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TreeCraft Pro - Cytoscape Tree Builder</title>
+<title>TreeMaker</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.34.3/cytoscape.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/cytoscape-edgehandles@4.0.1/cytoscape-edgehandles.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -64,6 +64,9 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 .search-box input:focus{border-color:var(--accent)}
 .hint-bar{position:absolute;top:12px;left:12px;z-index:50;background:rgba(26,29,39,.9);border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:10px;color:var(--text3);line-height:1.7;pointer-events:none;max-width:250px}
 .hint-bar b{color:var(--text2);font-weight:600}
+#nodeArrows{position:absolute;left:0;top:0;width:0;height:0;z-index:55;display:none;pointer-events:none}
+#nodeArrows .arr{position:absolute;width:26px;height:26px;border-radius:50%;background:#232734;border:1.5px solid var(--accent);color:var(--accent2);font-size:10px;cursor:pointer;pointer-events:auto;display:flex;align-items:center;justify-content:center;transition:transform .12s,background .12s,color .12s,box-shadow .12s;padding:0;font-family:inherit;line-height:1}
+#nodeArrows .arr:hover{background:var(--accent);color:#fff;transform:scale(1.25);box-shadow:0 0 14px rgba(108,92,231,.7);z-index:2}
 .minimap{position:absolute;bottom:12px;right:12px;width:170px;height:118px;background:rgba(26,29,39,.94);border:1px solid var(--border2);border-radius:8px;z-index:50;overflow:hidden}
 .minimap canvas{width:100%;height:100%;display:block}
 .zoom-ctl{position:absolute;bottom:12px;left:12px;display:flex;gap:4px;z-index:50}
@@ -114,7 +117,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 </head>
 <body>
 <div class="header">
-  <div class="logo">TreeCraft Pro</div>
+  <div class="logo">TreeMaker</div>
   <div class="divider"></div>
   <div class="tool-group">
     <button class="tool-btn active" id="toolSelect" onclick="setTool('select')" title="Select / Box-select (V)"><svg viewBox="0 0 24 24"><path d="M7 2l12 11.2-5.8.5 3.3 7.3-2.2 1-3.2-7.4L7 18.5V2z"/></svg></button>
@@ -183,7 +186,13 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
   <div class="canvas-wrap" id="canvasWrap">
     <div id="cy"></div>
     <input id="labelEditor" type="text" spellcheck="false">
-    <div class="hint-bar" id="hintBar"><b>Drag node edge</b> to connect &bull; <b>Shift+click</b> multi-select &bull; <b>drag empty area</b> box-select &bull; <b>double-click</b> edit / add &bull; <b>right-click</b> menu</div>
+    <div id="nodeArrows">
+      <button class="arr" data-dir="up" title="Add 2 children above" onmouseenter="cancelArrowHide()" onmouseleave="scheduleArrowHide()" onclick="arrowAdd('up')">&#9650;</button>
+      <button class="arr" data-dir="down" title="Add 2 children below" onmouseenter="cancelArrowHide()" onmouseleave="scheduleArrowHide()" onclick="arrowAdd('down')">&#9660;</button>
+      <button class="arr" data-dir="left" title="Add sibling on the left" onmouseenter="cancelArrowHide()" onmouseleave="scheduleArrowHide()" onclick="arrowAdd('left')">&#9664;</button>
+      <button class="arr" data-dir="right" title="Add sibling on the right" onmouseenter="cancelArrowHide()" onmouseleave="scheduleArrowHide()" onclick="arrowAdd('right')">&#9654;</button>
+    </div>
+    <div class="hint-bar" id="hintBar"><b>Hover a node</b> then click an arrow to grow the tree &bull; <b>drag node edge</b> to connect &bull; <b>Shift+click</b> multi-select &bull; <b>drag empty area</b> box-select &bull; <b>double-click</b> edit / add &bull; <b>right-click</b> menu</div>
     <div class="search-box"><input type="text" id="searchInput" placeholder="Search nodes..." oninput="searchNodes(this.value)"></div>
     <div class="zoom-ctl">
       <button class="tool-btn" onclick="zoomBy(1.25)" title="Zoom in">+</button>
@@ -215,7 +224,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 <script>
 'use strict';
 /* ================================================================
-   TreeCraft Pro - powered by Cytoscape.js
+   TreeMaker - powered by Cytoscape.js
    All visual state lives in element `data` so cy.json() snapshots
    preserve everything (needed for bulletproof undo/redo).
    ================================================================ */
@@ -227,6 +236,8 @@ let nextId = 1;
 let zTop = 1, zBottom = -1;
 let history = [], historyIdx = -1;
 let connectSrc = null;     // manual connect fallback
+let arrowNode = null;      // node currently showing hover arrows
+let arrowHideTimer = null;
 let mmTimer = null;
 let lastTap = { id: null, t: 0 };
 
@@ -399,19 +410,29 @@ function bindEvents() {
     showCtxMenu(e.originalEvent.clientX, e.originalEvent.clientY, 'bg');
   });
 
-  cy.on('mouseover', 'node', function (e) { e.target.addClass('hover'); cy.container().style.cursor = 'pointer'; });
-  cy.on('mouseout', 'node', function (e) { e.target.removeClass('hover'); cy.container().style.cursor = ''; });
+  cy.on('mouseover', 'node', function (e) {
+    e.target.addClass('hover');
+    cy.container().style.cursor = 'pointer';
+    cancelArrowHide();
+    if (tool === 'select') showArrows(e.target);
+  });
+  cy.on('mouseout', 'node', function (e) {
+    e.target.removeClass('hover');
+    cy.container().style.cursor = '';
+    scheduleArrowHide();
+  });
 
   // snapshot after a drag finishes (single undo step per drag)
   cy.on('free', 'node', function () { saveHistory(); scheduleMinimap(); });
   cy.on('drag', 'node', function () { scheduleMinimap(); });
   cy.on('add remove', function () { refreshAll(); scheduleMinimap(); });
-  cy.on('pan zoom', function () { updateZoomLabel(); scheduleMinimap(); });
+  cy.on('pan zoom', function () { updateZoomLabel(); scheduleMinimap(); positionArrows(); });
 
   // manual background pan (pan tool or space+drag)
   let panning = false, px = 0, py = 0;
   cy.on('tapstart', function (e) {
     if (e.target !== cy) return;
+    hideArrows();
     if (tool !== 'pan' && !spaceHeld) return;
     panning = true; px = e.originalEvent.clientX; py = e.originalEvent.clientY;
     cy.boxSelectionEnabled(false);
@@ -445,6 +466,7 @@ function setTool(t) {
   cy.boxSelectionEnabled(t !== 'pan');
   cy.container().style.cursor = t === 'pan' ? 'grab' : '';
   clearConnectSrc();
+  hideArrows();
   if (t === 'connect' && !eh) showToast('Click one node, then another, to connect');
   else if (t === 'connect' && eh) showToast('Drag the red handle on a node to connect');
 }
@@ -543,6 +565,7 @@ function deleteSelected() {
   const s = cy.$(':selected');
   if (s.length === 0) return;
   s.remove();
+  hideArrows();
   saveHistory(); refreshAll();
   showToast('Deleted ' + s.length + ' object(s)');
 }
@@ -598,6 +621,7 @@ function hideSelected() {
     if (el.isNode()) el.connectedEdges().hide();
   });
   cy.$(':selected').unselect();
+  hideArrows();
   saveHistory(); refreshAll();
   showToast('Hidden (' + s.length + ') — unhide from Layers tab');
 }
@@ -617,6 +641,97 @@ function manualConnectTap(n) {
 }
 function clearConnectSrc() {
   if (connectSrc) { connectSrc.removeClass('connect-src'); connectSrc = null; }
+}
+
+/* ---------------- hover arrows (SmartDraw-style quick add) ---------------- */
+const ARROW_SIZE = 26, ARROW_GAP = 10;
+
+function showArrows(n) {
+  if (!n || n.length === 0 || n.removed()) return;
+  if (arrowNode && arrowNode.length && !arrowNode.removed() && arrowNode.id() === n.id()) {
+    positionArrows();
+    return;
+  }
+  hideArrows();
+  arrowNode = n;
+  try { arrowNode.on('position', positionArrows); } catch (e) { /* ignore */ }
+  document.getElementById('nodeArrows').style.display = 'block';
+  positionArrows();
+}
+
+function hideArrows() {
+  cancelArrowHide();
+  if (arrowNode && arrowNode.length) { try { arrowNode.off('position'); } catch (e) { /* ignore */ } }
+  arrowNode = null;
+  document.getElementById('nodeArrows').style.display = 'none';
+}
+
+function scheduleArrowHide() {
+  cancelArrowHide();
+  arrowHideTimer = setTimeout(hideArrows, 240);
+}
+function cancelArrowHide() {
+  clearTimeout(arrowHideTimer);
+  arrowHideTimer = null;
+}
+
+function positionArrows() {
+  if (!arrowNode || arrowNode.length === 0 || arrowNode.removed()) { hideArrows(); return; }
+  const box = document.getElementById('nodeArrows');
+  if (box.style.display === 'none') return;
+  const cr = cy.container().getBoundingClientRect();
+  const wr = document.getElementById('canvasWrap').getBoundingClientRect();
+  const ox = cr.left - wr.left, oy = cr.top - wr.top;
+  const rp = arrowNode.renderedPosition();
+  const z = cy.zoom();
+  const hw = (arrowNode.width() * z) / 2, hh = (arrowNode.height() * z) / 2;
+  const S = ARROW_SIZE, G = ARROW_GAP;
+  const cx = ox + rp.x, cyy = oy + rp.y;
+  placeArrow('up', cx - S / 2, cyy - hh - G - S);
+  placeArrow('down', cx - S / 2, cyy + hh + G);
+  placeArrow('left', cx - hw - G - S, cyy - S / 2);
+  placeArrow('right', cx + hw + G, cyy - S / 2);
+}
+function placeArrow(dir, x, y) {
+  const btn = document.querySelector('#nodeArrows [data-dir="' + dir + '"]');
+  if (btn) { btn.style.left = Math.round(x) + 'px'; btn.style.top = Math.round(y) + 'px'; }
+}
+
+/* ---------------- arrow actions ---------------- */
+function arrowAdd(dir) {
+  const p = arrowNode;
+  if (!p || p.length === 0 || p.removed()) { hideArrows(); return; }
+  if (dir === 'down' || dir === 'up') arrowAddChildren(p, dir);
+  else arrowAddSibling(p, dir);
+  positionArrows();
+}
+
+// down/up arrow: create 2 children below/above the node
+function arrowAddChildren(p, dir) {
+  const pp = p.position();
+  const y = dir === 'down' ? pp.y + p.height() / 2 + 80 : pp.y - p.height() / 2 - 80;
+  const gap = 100;
+  const c1 = addNode('round-rectangle', pp.x - gap, y, { color: p.data('color') });
+  const c2 = addNode('round-rectangle', pp.x + gap, y, { color: p.data('color') });
+  linkNodes(p, c1);
+  linkNodes(p, c2);
+  cy.$(':selected').unselect();
+  c1.select(); c2.select();
+  saveHistory(); refreshAll();
+  showToast('Added 2 children');
+}
+
+// left/right arrow: add 1 sibling on that side
+function arrowAddSibling(p, dir) {
+  const pp = p.position();
+  const x = dir === 'right' ? pp.x + p.width() / 2 + 130 : pp.x - p.width() / 2 - 130;
+  const sib = addNode(p.data('shape'), x, pp.y, { color: p.data('color') });
+  const inc = p.incomers('edge');
+  if (inc.length > 0) linkNodes(inc[0].source(), sib);
+  cy.$(':selected').unselect();
+  sib.select();
+  saveHistory(); refreshAll();
+  showToast('Added sibling');
 }
 
 /* ---------------- inline label editor ---------------- */
@@ -718,6 +833,7 @@ function updateHistoryButtons() {
 }
 function restore(snap) {
   cy.elements().remove();
+  hideArrows();
   if (snap.elements.length) cy.add(snap.elements);
   nextId = snap.nextId; zTop = snap.zTop; zBottom = snap.zBottom;
   cy.nodes('.locked').lock();
@@ -790,7 +906,7 @@ function exportPNG() {
 
 function exportJSON() {
   const data = {
-    app: 'treecraft-pro', version: 1, nextId: nextId,
+    app: 'treemaker', version: 1, nextId: nextId,
     nodes: cy.nodes().map(function (n) {
       return { id: n.id(), label: n.data('label'), x: Math.round(n.position('x')), y: Math.round(n.position('y')),
         shape: n.data('shape'), color: n.data('color'), w: n.data('w'), h: n.data('h'),
@@ -821,6 +937,7 @@ function doImport() {
   catch (e) { showToast('Invalid JSON: ' + e.message); return; }
   const idMap = {};
   cy.elements().remove();
+  hideArrows();
   (data.nodes || []).forEach(function (d) {
     const n = addNode(d.shape || 'round-rectangle', d.x || 0, d.y || 0, {
       label: d.label || 'Node', color: d.color, w: d.w, h: d.h, fontSize: d.fontSize
@@ -843,6 +960,7 @@ function doImport() {
 function clearAll() {
   if (cy.elements().length && !confirm('Clear all nodes and edges?')) return;
   cy.elements().remove();
+  hideArrows();
   nextId = 1; zTop = 1; zBottom = -1;
   saveHistory(); refreshAll();
 }
@@ -1156,6 +1274,7 @@ function loadTemplate(id) {
   const spec = TPL_DATA[id];
   if (!spec) return;
   cy.elements().remove();
+  hideArrows();
   const added = spec.nodes.map(function (nd) {
     return addNode(nd[3] || 'rectangle', nd[1], nd[2], { label: nd[0], color: nd[4] });
   });
@@ -1245,6 +1364,7 @@ function setupKeyboard() {
     if (e.code === 'Escape') {
       commitLabelEditor(false);
       clearConnectSrc();
+      hideArrows();
       cy.$(':selected').unselect();
       cy.nodes().removeClass('dimmed');
       hideCtx(); refreshAll(); return;
