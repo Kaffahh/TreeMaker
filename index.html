@@ -4,8 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TreeMaker</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.34.3/cytoscape.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/cytoscape-edgehandles@4.0.1/cytoscape-edgehandles.min.js"></script>
+<script src="vendor/cytoscape.min.js"></script>
+<script src="vendor/cytoscape-edgehandles.min.js"></script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231a1d27'/%3E%3Ccircle cx='32' cy='24' r='13' fill='none' stroke='%236c5ce7' stroke-width='5'/%3E%3Ccircle cx='18' cy='40' r='9' fill='none' stroke='%2300cec9' stroke-width='4'/%3E%3Ccircle cx='46' cy='40' r='9' fill='none' stroke='%23e94560' stroke-width='4'/%3E%3Cpath d='M32 37v13M18 49l-5 7M46 49l5 7' stroke='%238b8da3' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -69,6 +70,8 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 #nodeArrows .arr:hover{background:var(--ac,#6c5ce7);border-color:var(--ac,#6c5ce7);color:#fff;transform:scale(1.25);box-shadow:0 0 16px var(--ac,#6c5ce7);z-index:2}
 #nodeArrows .arr:active{transform:scale(1.05)}
 @keyframes arrowPop{from{transform:scale(.4);opacity:0}to{transform:scale(1);opacity:1}}
+#nodeArrows .arr.toggle{border-color:#fff;color:#fff;font-weight:700;font-size:calc(var(--as,26px)*0.45)}
+#nodeArrows .arr.toggle:hover{background:#fff;border-color:#fff;color:#1a1d27;box-shadow:0 0 16px rgba(255,255,255,.55)}
 .minimap{position:absolute;bottom:12px;right:12px;width:170px;height:118px;background:rgba(26,29,39,.94);border:1px solid var(--border2);border-radius:8px;z-index:50;overflow:hidden}
 .minimap canvas{width:100%;height:100%;display:block}
 .zoom-ctl{position:absolute;bottom:12px;left:12px;display:flex;gap:4px;z-index:50}
@@ -193,8 +196,9 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
       <button class="arr" data-dir="down" title="Add 2 children below" onmouseenter="cancelArrowHide()" onmouseleave="scheduleArrowHide()" onclick="arrowAdd('down')">&#9660;</button>
       <button class="arr" data-dir="left" title="Add sibling on the left" onmouseenter="cancelArrowHide()" onmouseleave="scheduleArrowHide()" onclick="arrowAdd('left')">&#9664;</button>
       <button class="arr" data-dir="right" title="Add sibling on the right" onmouseenter="cancelArrowHide()" onmouseleave="scheduleArrowHide()" onclick="arrowAdd('right')">&#9654;</button>
+      <button class="arr toggle" data-dir="toggle" title="Collapse/expand subtree" onmouseenter="cancelArrowHide()" onmouseleave="scheduleArrowHide()" onclick="toggleCollapseArrow()">&#8722;</button>
     </div>
-    <div class="hint-bar" id="hintBar"><b>Hover a node</b> then click an arrow to grow the tree &bull; <b>drag node edge</b> to connect &bull; <b>Shift+click</b> multi-select &bull; <b>drag empty area</b> box-select &bull; <b>double-click</b> edit / add &bull; <b>right-click</b> menu</div>
+    <div class="hint-bar" id="hintBar"><b>Hover a node:</b> arrows grow the tree, <b>&minus;/+</b> collapses &bull; <b>drag node edge</b> to connect &bull; <b>drop node onto node</b> to reparent &bull; <b>Shift+click / drag empty area</b> multi-select &bull; <b>double-click</b> edit / add &bull; <b>right-click</b> menu</div>
     <div class="search-box"><input type="text" id="searchInput" placeholder="Search nodes..." oninput="searchNodes(this.value)"></div>
     <div class="zoom-ctl">
       <button class="tool-btn" onclick="zoomBy(1.25)" title="Zoom in">+</button>
@@ -242,6 +246,12 @@ let arrowNode = null;      // node currently showing hover arrows
 let arrowHideTimer = null;
 let mmTimer = null;
 let lastTap = { id: null, t: 0 };
+let manualHiddenNodes = [];  // ids hidden via Hide action / layers
+let manualHiddenEdges = [];
+let collapsedIds = [];       // ids of collapsed subtree roots
+let autosaveTimer = null;
+let lastSavedLabel = '';
+const AUTOSAVE_KEY = 'treemaker.autosave.v1';
 
 const COLORS = ['#6c5ce7','#e94560','#00cec9','#fdcb6e','#74b9ff','#ff6b6b','#a29bfe','#55efc4','#fab1a0','#fd79a8','#636e72','#2d3436'];
 const SHAPES = [
@@ -423,6 +433,14 @@ function baseStyle() {
       'line-color': '#a29bfe', 'target-arrow-color': '#a29bfe', 'width': 4,
       'overlay-color': '#6c5ce7', 'overlay-opacity': 0.2
     } },
+    { selector: 'node.drop-ok', style: {
+      'border-color': '#00c896', 'border-width': 4,
+      'overlay-color': '#00c896', 'overlay-opacity': 0.25
+    } },
+    { selector: 'node.drop-bad', style: {
+      'border-color': '#ff6b6b', 'border-width': 4,
+      'overlay-color': '#ff6b6b', 'overlay-opacity': 0.25
+    } },
     { selector: '.eh-handle', style: {
       'background-color': '#e94560', 'width': 14, 'height': 14,
       'shape': 'ellipse', 'overlay-opacity': 0, 'border-width': 0
@@ -538,8 +556,24 @@ function bindEvents() {
   });
 
   // snapshot after a drag finishes (single undo step per drag)
-  cy.on('free', 'node', function () { saveHistory(); scheduleMinimap(); });
-  cy.on('drag', 'node', function () { scheduleMinimap(); });
+  cy.on('grab', 'node', function () { clearDropTarget(); });
+  cy.on('free', 'node', function (e) {
+    const m = e.target;
+    let done = false;
+    if (pendingDrop && pendingDrop.length && pendingDrop.id() !== m.id()) {
+      const t = pendingDrop;
+      clearDropTarget();
+      done = tryReparent(m, t);
+    } else {
+      clearDropTarget();
+    }
+    if (!done) saveHistory();
+    scheduleMinimap();
+  });
+  cy.on('drag', 'node', function (e) {
+    scheduleMinimap();
+    updateDropTarget(e.target);
+  });
   cy.on('add remove', function () { refreshAll(); scheduleMinimap(); });
   cy.on('pan zoom', function () { updateZoomLabel(); scheduleMinimap(); positionArrows(); });
 
@@ -618,7 +652,9 @@ function viewportCenter() {
 }
 
 function addNodeAt(x, y, shape) {
-  const n = addNode(shape || 'round-rectangle', x, y);
+  const st = shape || 'round-rectangle';
+  const spot = spotFor(st, x, y);
+  const n = addNode(st, spot.x, spot.y);
   cy.$(':selected').unselect();
   n.select();
   saveHistory(); refreshAll();
@@ -638,11 +674,41 @@ function modelFromClient(clientX, clientY) {
   return { x: (clientX - r.left - p.x) / z, y: (clientY - r.top - p.y) / z };
 }
 
+/* ---------------- free-spot search (anti-overlap) ---------------- */
+function rectsOverlap(a, b, pad) {
+  return a.x - pad < b.x + b.w && a.x + a.w + pad > b.x &&
+         a.y - pad < b.y + b.h && a.y + a.h + pad > b.y;
+}
+function findFreeSpot(x, y, w, h) {
+  const pad = 30;
+  const boxes = cy.nodes(':visible').map(function (n) {
+    return { x: n.position('x') - n.width() / 2, y: n.position('y') - n.height() / 2, w: n.width(), h: n.height() };
+  });
+  const fits = function (cx, cy) {
+    const c = { x: cx - w / 2, y: cy - h / 2, w: w, h: h };
+    return !boxes.some(function (b) { return rectsOverlap(c, b, pad); });
+  };
+  if (fits(x, y)) return { x: x, y: y };
+  for (let r = 50; r <= 1500; r += 50) {
+    for (let a = 0; a < 12; a++) {
+      const ang = (a / 12) * Math.PI * 2 + (r / 50) * 0.26;
+      const nx = x + Math.cos(ang) * r, ny = y + Math.sin(ang) * r;
+      if (fits(nx, ny)) return { x: nx, y: ny };
+    }
+  }
+  return { x: x, y: y + 600 };
+}
+function spotFor(shape, x, y) {
+  const d = shapeDefaultSize(shape || 'round-rectangle');
+  return findFreeSpot(x, y, d.w, d.h);
+}
+
 function addChild() {
   const s = selNodes();
   if (s.length === 0) { quickAdd('round-rectangle'); return; }
   const p = s[0], pp = p.position();
-  const child = addNode('round-rectangle', pp.x, pp.y + p.height() / 2 + 80, { color: p.data('color') });
+  const cspot = spotFor('round-rectangle', pp.x, pp.y + p.height() / 2 + 80);
+  const child = addNode('round-rectangle', cspot.x, cspot.y, { color: p.data('color') });
   linkNodes(p, child);
   cy.$(':selected').unselect(); child.select();
   saveHistory(); refreshAll();
@@ -652,7 +718,9 @@ function addSibling() {
   const s = selNodes();
   if (s.length === 0) return;
   const p = s[0], pp = p.position();
-  const sib = addNode(p.data('shape'), pp.x + p.width() / 2 + 120, pp.y, { color: p.data('color') });
+  const sh = p.data('shape');
+  const sspot = spotFor(sh, pp.x + p.width() / 2 + 120, pp.y);
+  const sib = addNode(sh, sspot.x, sspot.y, { color: p.data('color') });
   const incoming = p.incomers('edge');
   if (incoming.length > 0) {
     const parent = incoming[0].source();
@@ -677,6 +745,43 @@ function linkNodes(a, b, opts) {
   return cy.add({ group: 'edges', data: Object.assign(d, { source: a.id(), target: b.id() }) });
 }
 
+/* ---------------- drag-to-reparent ---------------- */
+let pendingDrop = null;
+
+function clearDropTarget() {
+  if (pendingDrop && pendingDrop.length) { try { pendingDrop.removeClass('drop-ok drop-bad'); } catch (e) { /* ignore */ } }
+  pendingDrop = null;
+}
+function updateDropTarget(moving) {
+  clearDropTarget();
+  if (!moving || !moving.length || moving.removed()) return;
+  const c = moving.position();
+  const hits = cy.nodes(':visible').filter(function (n) {
+    if (n.id() === moving.id() || n.selected()) return false;
+    return Math.abs(n.position('x') - c.x) < n.width() / 2 + 12 &&
+           Math.abs(n.position('y') - c.y) < n.height() / 2 + 12;
+  });
+  if (hits.length === 0) return;
+  pendingDrop = hits[0];
+  const desc = {};
+  moving.successors().forEach(function (x) { desc[x.id()] = true; });
+  pendingDrop.addClass(desc[pendingDrop.id()] ? 'drop-bad' : 'drop-ok');
+}
+function tryReparent(child, parent) {
+  if (!child || !child.length || child.removed() || !parent || !parent.length || parent.removed()) return false;
+  if (child.id() === parent.id()) return false;
+  const desc = {};
+  child.successors().forEach(function (x) { desc[x.id()] = true; });
+  if (desc[parent.id()]) { showToast('Cannot move: target is inside its own subtree'); return false; }
+  const inc = child.incomers('edge');
+  if (inc.length > 0 && inc[0].source().id() === parent.id()) return false;
+  inc.forEach(function (e) { e.remove(); });
+  linkNodes(parent, child);
+  saveHistory(); refreshAll(); scheduleMinimap();
+  showToast('Moved under "' + parent.data('label') + '"');
+  return true;
+}
+
 function deleteSelected() {
   const s = cy.$(':selected');
   if (s.length === 0) return;
@@ -694,7 +799,8 @@ function duplicateSelected() {
   s.forEach(function (n) {
     const d = Object.assign({}, n.data());
     d.id = 'n' + (nextId++);
-    const c = cy.add({ group: 'nodes', data: d, position: { x: n.position('x') + 36, y: n.position('y') + 36 } });
+    const dspot = findFreeSpot(n.position('x') + 36, n.position('y') + 36, n.width(), n.height());
+    const c = cy.add({ group: 'nodes', data: d, position: { x: dspot.x, y: dspot.y } });
     idMap[n.id()] = c;
     clones.push(c);
   });
@@ -733,12 +839,16 @@ function hideSelected() {
   const s = cy.$(':selected');
   if (s.length === 0) return;
   s.forEach(function (el) {
-    el.hide();
-    if (el.isNode()) el.connectedEdges().hide();
+    if (el.isNode()) {
+      if (manualHiddenNodes.indexOf(el.id()) < 0) manualHiddenNodes.push(el.id());
+    } else {
+      if (manualHiddenEdges.indexOf(el.id()) < 0) manualHiddenEdges.push(el.id());
+    }
   });
   cy.$(':selected').unselect();
   hideArrows();
-  saveHistory(); refreshAll();
+  applyVisibility();
+  saveHistory(); refreshAll(); scheduleMinimap();
   showToast('Hidden (' + s.length + ') — unhide from Layers tab');
 }
 
@@ -847,10 +957,50 @@ function positionArrows() {
   placeArrow('down', cx - S / 2, cyy + hh + G);
   placeArrow('left', cx - hw - G - S, cyy - S / 2);
   placeArrow('right', cx + hw + G, cyy - S / 2);
+  const tbtn = document.querySelector('#nodeArrows [data-dir="toggle"]');
+  if (tbtn) {
+    const show = arrowNode.outgoers('edge').length > 0 || hasCollapsedBelow(arrowNode);
+    const isCol = collapsedIds.indexOf(arrowNode.id()) >= 0;
+    tbtn.style.display = show ? 'flex' : 'none';
+    if (show) {
+      tbtn.textContent = isCol ? '+' : '−';
+      tbtn.title = isCol ? 'Expand subtree' : 'Collapse subtree';
+      placeArrow('toggle', cx + hw + G, cyy - hh - G - S);
+    }
+  }
 }
 function placeArrow(dir, x, y) {
   const btn = document.querySelector('#nodeArrows [data-dir="' + dir + '"]');
   if (btn) { btn.style.left = Math.round(x) + 'px'; btn.style.top = Math.round(y) + 'px'; }
+}
+
+/* ---------------- collapse / expand subtree ---------------- */
+function hasCollapsedBelow(n) {
+  if (!n || !n.length) return false;
+  if (collapsedIds.indexOf(n.id()) >= 0) return true;
+  const desc = n.successors().map(function (x) { return x.id(); });
+  return collapsedIds.some(function (id) { return desc.indexOf(id) >= 0; });
+}
+function toggleCollapse(n) {
+  if (!n || !n.length || n.removed()) return;
+  const id = n.id();
+  const i = collapsedIds.indexOf(id);
+  if (i >= 0) collapsedIds.splice(i, 1);
+  else {
+    if (n.outgoers('edge').length === 0 && !hasCollapsedBelow(n)) return;
+    collapsedIds.push(id);
+  }
+  applyVisibility();
+  saveHistory(); refreshAll(); scheduleMinimap(); positionArrows();
+}
+function toggleCollapseArrow() {
+  if (!arrowNode || arrowNode.length === 0 || arrowNode.removed()) { hideArrows(); return; }
+  toggleCollapse(arrowNode);
+  positionArrows();
+}
+function toggleCollapseSelected() {
+  const s = selNodes();
+  if (s.length > 0) toggleCollapse(s[0]);
 }
 
 /* ---------------- arrow actions ---------------- */
@@ -867,8 +1017,10 @@ function arrowAddChildren(p, dir) {
   const pp = p.position();
   const y = dir === 'down' ? pp.y + p.height() / 2 + 80 : pp.y - p.height() / 2 - 80;
   const gap = 100;
-  const c1 = addNode('round-rectangle', pp.x - gap, y, { color: p.data('color') });
-  const c2 = addNode('round-rectangle', pp.x + gap, y, { color: p.data('color') });
+  const s1 = spotFor('round-rectangle', pp.x - gap, y);
+  const s2 = spotFor('round-rectangle', pp.x + gap, y);
+  const c1 = addNode('round-rectangle', s1.x, s1.y, { color: p.data('color') });
+  const c2 = addNode('round-rectangle', s2.x, s2.y, { color: p.data('color') });
   linkNodes(p, c1);
   linkNodes(p, c2);
   cy.$(':selected').unselect();
@@ -881,7 +1033,9 @@ function arrowAddChildren(p, dir) {
 function arrowAddSibling(p, dir) {
   const pp = p.position();
   const x = dir === 'right' ? pp.x + p.width() / 2 + 130 : pp.x - p.width() / 2 - 130;
-  const sib = addNode(p.data('shape'), x, pp.y, { color: p.data('color') });
+  const ashape = p.data('shape');
+  const aspot = spotFor(ashape, x, pp.y);
+  const sib = addNode(ashape, aspot.x, aspot.y, { color: p.data('color') });
   const inc = p.incomers('edge');
   if (inc.length > 0) linkNodes(inc[0].source(), sib);
   cy.$(':selected').unselect();
@@ -969,8 +1123,11 @@ function batchColor() {
 function snapshot() {
   return {
     nextId: nextId, zTop: zTop, zBottom: zBottom,
-    hiddenNodes: cy.nodes(':hidden').map(function (n) { return n.id(); }),
-    hiddenEdges: cy.edges(':hidden').map(function (e) { return e.id(); }),
+    manualHiddenNodes: manualHiddenNodes.slice(),
+    manualHiddenEdges: manualHiddenEdges.slice(),
+    collapsedIds: collapsedIds.slice(),
+    theme: currentTheme, customBase: customBase, customMode: customMode,
+    arrowColors: Object.assign({}, arrowColors), arrowSize: arrowSize, arrowsEnabled: arrowsEnabled,
     elements: cy.elements().jsons().map(function (j) {
       return { group: j.group, data: j.data, position: j.position, classes: (j.classes || '').replace(/connect-src/g, '').trim() };
     })
@@ -982,6 +1139,7 @@ function saveHistory() {
   historyIdx = history.length - 1;
   if (history.length > 60) { history.shift(); historyIdx--; }
   updateHistoryButtons();
+  scheduleAutosave();
 }
 function updateHistoryButtons() {
   document.getElementById('btnUndo').disabled = historyIdx <= 0;
@@ -993,28 +1151,95 @@ function restore(snap) {
   if (snap.elements.length) cy.add(snap.elements);
   nextId = snap.nextId; zTop = snap.zTop; zBottom = snap.zBottom;
   cy.nodes('.locked').lock();
-  (snap.hiddenNodes || []).forEach(function (id) {
-    const n = cy.getElementById(id);
-    if (n.length) { n.hide(); n.connectedEdges().hide(); }
+  manualHiddenNodes = (snap.manualHiddenNodes || []).slice();
+  manualHiddenEdges = (snap.manualHiddenEdges || []).slice();
+  collapsedIds = (snap.collapsedIds || []).slice();
+  if (snap.theme && THEMES[snap.theme]) currentTheme = snap.theme;
+  if (snap.customBase) customBase = snap.customBase;
+  if (snap.customMode === 'single' || snap.customMode === 'shades') customMode = snap.customMode;
+  if (snap.arrowColors) ['up', 'down', 'left', 'right'].forEach(function (dir) {
+    if (typeof snap.arrowColors[dir] === 'string') arrowColors[dir] = snap.arrowColors[dir];
   });
-  (snap.hiddenEdges || []).forEach(function (id) {
-    const e = cy.getElementById(id);
-    if (e.length) e.hide();
-  });
+  if (+snap.arrowSize >= 20 && +snap.arrowSize <= 40) arrowSize = Math.round(+snap.arrowSize);
+  if (typeof snap.arrowsEnabled === 'boolean') arrowsEnabled = snap.arrowsEnabled;
+  applyArrowColors();
+  applyVisibility();
   cy.$(':selected').unselect();
   refreshAll(); scheduleMinimap();
+}
+// single source of truth for element visibility (manual hide + collapse)
+function getSubtreeIds(rootId) {
+  const nodes = [], edges = [];
+  const seen = {};
+  seen[rootId] = true;
+  const queue = [rootId];
+  while (queue.length > 0) {
+    const id = queue.shift();
+    const n = cy.getElementById(id);
+    if (!n.length) continue;
+    n.outgoers('edge').forEach(function (e) {
+      edges.push(e.id());
+      const t = e.target().id();
+      if (!seen[t]) { seen[t] = true; nodes.push(t); queue.push(t); }
+    });
+  }
+  return { nodes: nodes, edges: edges };
+}
+function applyVisibility() {
+  const hideN = {};
+  manualHiddenNodes.forEach(function (id) { hideN[id] = true; });
+  collapsedIds.forEach(function (id) {
+    getSubtreeIds(id).nodes.forEach(function (x) { hideN[x] = true; });
+  });
+  cy.nodes().forEach(function (n) {
+    if (hideN[n.id()]) n.hide(); else n.show();
+  });
+  const hideE = {};
+  manualHiddenEdges.forEach(function (id) { hideE[id] = true; });
+  cy.edges().forEach(function (e) {
+    if (hideE[e.id()] || hideN[e.source().id()] || hideN[e.target().id()]) e.hide();
+    else e.show();
+  });
 }
 function undo() {
   if (historyIdx <= 0) return;
   historyIdx--;
   restore(JSON.parse(history[historyIdx]));
   updateHistoryButtons();
+  saveAutosave();
 }
 function redo() {
   if (historyIdx >= history.length - 1) return;
   historyIdx++;
   restore(JSON.parse(history[historyIdx]));
   updateHistoryButtons();
+  saveAutosave();
+}
+/* ---------------- autosave (localStorage) ---------------- */
+function scheduleAutosave() {
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(saveAutosave, 800);
+}
+function saveAutosave() {
+  clearTimeout(autosaveTimer);
+  try {
+    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(snapshot()));
+    const d = new Date();
+    const hh = String(d.getHours()).padStart(2, '0'), mm = String(d.getMinutes()).padStart(2, '0');
+    lastSavedLabel = hh + ':' + mm;
+  } catch (e) { /* private mode / quota: stay silent */ }
+  updateStatusBar();
+}
+function loadAutosave() {
+  try {
+    const raw = localStorage.getItem(AUTOSAVE_KEY);
+    if (!raw) return false;
+    const snap = JSON.parse(raw);
+    if (!snap || !snap.elements || snap.elements.length === 0) return false;
+    restore(snap);
+    fitView();
+    return true;
+  } catch (e) { return false; }
 }
 
 /* ---------------- view: zoom / fit / layout ---------------- */
@@ -1096,6 +1321,7 @@ function doImport() {
   const idMap = {};
   cy.elements().remove();
   hideArrows();
+  manualHiddenNodes = []; manualHiddenEdges = []; collapsedIds = [];
   if (data.theme && THEMES[data.theme]) currentTheme = data.theme;
   if (data.customBase) customBase = data.customBase;
   if (data.customMode === 'single' || data.customMode === 'shades') customMode = data.customMode;
@@ -1128,15 +1354,21 @@ function clearAll() {
   if (cy.elements().length && !confirm('Clear all nodes and edges?')) return;
   cy.elements().remove();
   hideArrows();
+  manualHiddenNodes = []; manualHiddenEdges = []; collapsedIds = [];
   nextId = 1; zTop = 1; zBottom = -1;
   saveHistory(); refreshAll();
 }
 
 /* ---------------- refresh: status / props / layers ---------------- */
-function refreshAll() {
+function updateStatusBar() {
+  if (!cy) return;
   const nn = cy.nodes().length, ne = cy.edges().length, ns = selNodes().length;
-  document.getElementById('statusBar').textContent = nn + ' nodes • ' + ne + ' edges' + (ns ? ' • ' + ns + ' selected' : '');
-  document.getElementById('selectedCount').textContent = ns > 1 ? ns + ' selected' : '';
+  document.getElementById('statusBar').textContent = nn + ' nodes • ' + ne + ' edges' +
+    (ns ? ' • ' + ns + ' selected' : '') + (lastSavedLabel ? ' • saved ' + lastSavedLabel : '');
+}
+function refreshAll() {
+  updateStatusBar();
+  document.getElementById('selectedCount').textContent = selNodes().length > 1 ? selNodes().length + ' selected' : '';
   updateProps();
   updateLayers();
 }
@@ -1206,7 +1438,11 @@ function updateProps() {
     '<div class="prop-row" style="margin-top:6px"><input class="prop-input" type="number" min="8" max="48" value="' + n.data('fontSize') + '" onchange="setProp(\'fontSize\',+this.value)">' +
     '<button class="prop-btn' + (n.data('fontWeight') === 'bold' ? ' active' : '') + '" onclick="setProp(\'bold\')" style="font-weight:bold">B</button></div></div>' +
     '<div class="prop-section"><div class="prop-label">Connections</div>' +
-    '<div style="font-size:11px;color:var(--text2)">' + n.connectedEdges().length + ' edge(s)</div></div>';
+    '<div style="font-size:11px;color:var(--text2)">' + n.connectedEdges().length + ' edge(s)</div>' +
+    (n.outgoers('edge').length > 0 || hasCollapsedBelow(n)
+      ? '<div class="prop-row" style="margin-top:6px"><button class="prop-btn" onclick="toggleCollapseSelected()">' +
+        (collapsedIds.indexOf(n.id()) >= 0 ? 'Expand subtree' : 'Collapse subtree') + '</button></div>' : '') +
+    '</div>';
 }
 
 function renderThemePanel() {
@@ -1306,9 +1542,11 @@ function layerSelect(id) {
 function layerToggleVis(id) {
   const n = cy.getElementById(id);
   if (!n.length) return;
-  if (n.visible()) { n.unselect(); n.hide(); n.connectedEdges().hide(); }
-  else { n.show(); n.connectedEdges().show(); }
-  refreshAll(); scheduleMinimap();
+  const i = manualHiddenNodes.indexOf(id);
+  if (i >= 0) manualHiddenNodes.splice(i, 1);
+  else { n.unselect(); manualHiddenNodes.push(id); }
+  applyVisibility();
+  saveHistory(); refreshAll(); scheduleMinimap();
 }
 
 /* ---------------- search ---------------- */
@@ -1488,6 +1726,7 @@ function loadTemplate(id) {
   if (!spec) return;
   cy.elements().remove();
   hideArrows();
+  manualHiddenNodes = []; manualHiddenEdges = []; collapsedIds = [];
   const added = spec.nodes.map(function (nd) {
     return addNode(nd[3] || 'rectangle', nd[1], nd[2], { label: nd[0], color: nd[4] });
   });
@@ -1512,7 +1751,8 @@ function showCtxMenu(x, y, kind) {
       item('addChild()', 'Add child', 'Tab') +
       item('addSibling()', 'Add sibling', 'Enter') +
       item('duplicateSelected()', 'Duplicate', 'Ctrl+D') +
-      itemEdit() + sep() +
+      itemEdit() +
+      item('toggleCollapseSelected()', 'Collapse/expand', '') + sep() +
       item('bringToFront()', 'Bring to front', '') +
       item('sendToBack()', 'Send to back', '') + sep() +
       item('lockSelected()', 'Lock', '') +
@@ -1620,8 +1860,8 @@ window.addEventListener('load', function () {
   buildPalette();
   buildTemplateList();
   applyArrowColors();
-  saveHistory();
-  loadTemplate('org');
+  if (loadAutosave()) { saveHistory(); showToast('Restored autosaved work'); }
+  else loadTemplate('org');
   setTimeout(function () { cy.resize(); fitView(); scheduleMinimap(); }, 150);
 });
 </script>
